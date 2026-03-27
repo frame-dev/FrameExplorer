@@ -41,6 +41,13 @@ import java.util.regex.Pattern;
 import java.util.regex.PatternSyntaxException;
 
 public class FileExplorerFrame extends JFrame {
+    private enum OperatingSystem {
+        WINDOWS,
+        MAC,
+        LINUX,
+        OTHER
+    }
+
     private final FileSystemView fileSystemView = FileSystemView.getFileSystemView();
 
     private final JTextField pathField = new JTextField();
@@ -58,9 +65,14 @@ public class FileExplorerFrame extends JFrame {
     private JPanel topPanel;
     private JPanel detailsPanel;
     private JPanel statusPanel;
+    private JPanel favoritesPanel;
     private JSplitPane horizontalSplit;
     private JSplitPane verticalSplit;
     private JSplitPane leftSplit;
+    private JLabel brandLabel;
+    private JLabel brandSubtitleLabel;
+    private JLabel favoritesTitleLabel;
+    private JLabel detailsTitleLabel;
 
     private final DefaultTreeModel treeModel;
     private final JTree tree;
@@ -72,6 +84,7 @@ public class FileExplorerFrame extends JFrame {
 
     private final Deque<Path> backStack = new ArrayDeque<>();
     private final Deque<Path> forwardStack = new ArrayDeque<>();
+    private final Deque<Path> recentDirectories = new ArrayDeque<>();
 
     private final List<Path> clipboardEntries = new ArrayList<>();
     private boolean clipboardCut;
@@ -80,12 +93,16 @@ public class FileExplorerFrame extends JFrame {
     private UiDensity uiDensity = UiDensity.COMFORTABLE;
     private UiScale uiScale = UiScale.S100;
     private UiTheme uiTheme = UiTheme.OCEAN;
+    private String lookAndFeelClassName = "";
 
     private Path currentDirectory;
 
     private final JButton backButton = new JButton("Back");
     private final JButton forwardButton = new JButton("Forward");
     private final ExplorerSettings settings;
+    private JMenu recentMenu;
+    private JCheckBoxMenuItem detailsToggleMenuItem;
+    private boolean detailsVisible = true;
 
     public FileExplorerFrame() {
         super("Frame Explorer");
@@ -93,6 +110,9 @@ public class FileExplorerFrame extends JFrame {
         uiDensity = parseEnum(UiDensity.class, settings.density, UiDensity.COMFORTABLE);
         uiScale = parseEnum(UiScale.class, settings.scale, UiScale.S100);
         uiTheme = parseEnum(UiTheme.class, settings.theme, UiTheme.OCEAN);
+        lookAndFeelClassName = settings.lookAndFeelClassName == null || settings.lookAndFeelClassName.isBlank()
+                ? UIManager.getLookAndFeel().getClass().getName()
+                : settings.lookAndFeelClassName;
         showHiddenFiles = settings.showHiddenFiles;
 
         setDefaultCloseOperation(JFrame.EXIT_ON_CLOSE);
@@ -242,12 +262,17 @@ public class FileExplorerFrame extends JFrame {
 
         JMenu themeMenu = new JMenu("Theme");
         ButtonGroup themeGroup = new ButtonGroup();
-        addThemeMenuItem(themeMenu, themeGroup, UiTheme.OCEAN);
-        addThemeMenuItem(themeMenu, themeGroup, UiTheme.FOREST);
-        addThemeMenuItem(themeMenu, themeGroup, UiTheme.SUNSET);
-        addThemeMenuItem(themeMenu, themeGroup, UiTheme.MONO);
-        addThemeMenuItem(themeMenu, themeGroup, UiTheme.MIDNIGHT);
+        for (UiTheme theme : UiTheme.values()) {
+            addThemeMenuItem(themeMenu, themeGroup, theme);
+        }
         viewMenu.add(themeMenu);
+
+        JMenu lookAndFeelMenu = new JMenu("Look & Feel");
+        ButtonGroup lafGroup = new ButtonGroup();
+        for (UIManager.LookAndFeelInfo info : UIManager.getInstalledLookAndFeels()) {
+            addLookAndFeelMenuItem(lookAndFeelMenu, lafGroup, info.getName(), info.getClassName());
+        }
+        viewMenu.add(lookAndFeelMenu);
 
         JMenu windowSizeMenu = new JMenu("Window Size");
         windowSizeMenu.add(createMenuItem("Small (1000x650)", null, e -> setSize(1000, 650)));
@@ -256,9 +281,30 @@ public class FileExplorerFrame extends JFrame {
         windowSizeMenu.add(createMenuItem("Maximize", null, e -> setExtendedState(getExtendedState() | JFrame.MAXIMIZED_BOTH)));
         viewMenu.add(windowSizeMenu);
 
+        detailsToggleMenuItem = new JCheckBoxMenuItem("Show Details Panel");
+        detailsToggleMenuItem.setSelected(detailsVisible);
+        detailsToggleMenuItem.addActionListener(e -> toggleDetailsPanel(detailsToggleMenuItem.isSelected()));
+        viewMenu.add(detailsToggleMenuItem);
+
+        JMenu toolsMenu = new JMenu("Tools");
+        toolsMenu.add(createMenuItem("Copy File Name", KeyStroke.getKeyStroke(KeyEvent.VK_C, InputEvent.ALT_DOWN_MASK), e -> copyNameOfSelection()));
+        toolsMenu.add(createMenuItem("Open In Terminal", KeyStroke.getKeyStroke(KeyEvent.VK_T, InputEvent.ALT_DOWN_MASK), e -> openInTerminal()));
+
+        JMenu goMenu = new JMenu("Go");
+        goMenu.add(createMenuItem("Back", KeyStroke.getKeyStroke(KeyEvent.VK_LEFT, InputEvent.ALT_DOWN_MASK), e -> goBack()));
+        goMenu.add(createMenuItem("Forward", KeyStroke.getKeyStroke(KeyEvent.VK_RIGHT, InputEvent.ALT_DOWN_MASK), e -> goForward()));
+        goMenu.add(createMenuItem("Up", KeyStroke.getKeyStroke(KeyEvent.VK_UP, InputEvent.ALT_DOWN_MASK), e -> goUp()));
+        goMenu.add(createMenuItem("Home", KeyStroke.getKeyStroke(KeyEvent.VK_H, InputEvent.ALT_DOWN_MASK), e -> navigateTo(Path.of(System.getProperty("user.home")), true)));
+        goMenu.addSeparator();
+        recentMenu = new JMenu("Recent");
+        refreshRecentMenu();
+        goMenu.add(recentMenu);
+
         menuBar.add(fileMenu);
         menuBar.add(editMenu);
         menuBar.add(viewMenu);
+        menuBar.add(goMenu);
+        menuBar.add(toolsMenu);
         setJMenuBar(menuBar);
     }
 
@@ -313,6 +359,14 @@ public class FileExplorerFrame extends JFrame {
         return item;
     }
 
+    private void addLookAndFeelMenuItem(JMenu menu, ButtonGroup group, String displayName, String className) {
+        JRadioButtonMenuItem item = new JRadioButtonMenuItem(displayName);
+        item.setSelected(className.equals(lookAndFeelClassName));
+        item.addActionListener(e -> applyLookAndFeel(className));
+        group.add(item);
+        menu.add(item);
+    }
+
     private JMenuItem createMenuItem(String title, KeyStroke shortcut, java.awt.event.ActionListener listener) {
         JMenuItem item = new JMenuItem(title);
         if (shortcut != null) {
@@ -320,6 +374,36 @@ public class FileExplorerFrame extends JFrame {
         }
         item.addActionListener(listener);
         return item;
+    }
+
+    private void refreshRecentMenu() {
+        if (recentMenu == null) {
+            return;
+        }
+        recentMenu.removeAll();
+        if (recentDirectories.isEmpty()) {
+            JMenuItem empty = new JMenuItem("No recent folders");
+            empty.setEnabled(false);
+            recentMenu.add(empty);
+            return;
+        }
+        for (Path recent : recentDirectories) {
+            JMenuItem item = new JMenuItem(recent.toString());
+            item.addActionListener(e -> navigateTo(recent, true));
+            recentMenu.add(item);
+        }
+    }
+
+    private void addRecentDirectory(Path directory) {
+        if (directory == null) {
+            return;
+        }
+        recentDirectories.remove(directory);
+        recentDirectories.addFirst(directory);
+        while (recentDirectories.size() > 12) {
+            recentDirectories.removeLast();
+        }
+        refreshRecentMenu();
     }
 
     private void buildTopPanel() {
@@ -433,10 +517,16 @@ public class FileExplorerFrame extends JFrame {
         rowTop.setOpaque(false);
         JPanel leftHeader = new JPanel(new BorderLayout(8, 0));
         leftHeader.setOpaque(false);
-        JLabel brandLabel = new JLabel("Frame Explorer");
-        brandLabel.setFont(brandLabel.getFont().deriveFont(Font.BOLD, 14f));
-        leftHeader.add(brandLabel, BorderLayout.WEST);
-        leftHeader.add(navButtons, BorderLayout.CENTER);
+        JPanel brandPanel = new JPanel(new GridLayout(2, 1, 0, 0));
+        brandPanel.setOpaque(false);
+        brandLabel = new JLabel("Frame Explorer");
+        brandLabel.setFont(brandLabel.getFont().deriveFont(Font.BOLD, 15f));
+        brandSubtitleLabel = new JLabel("Clean desktop browsing");
+        brandSubtitleLabel.setFont(brandSubtitleLabel.getFont().deriveFont(Font.PLAIN, 11f));
+        brandPanel.add(brandLabel);
+        brandPanel.add(brandSubtitleLabel);
+        leftHeader.add(brandPanel, BorderLayout.WEST);
+        leftHeader.add(navButtons, BorderLayout.EAST);
 
         rowTop.add(leftHeader, BorderLayout.WEST);
         rowTop.add(pathPanel, BorderLayout.CENTER);
@@ -466,8 +556,13 @@ public class FileExplorerFrame extends JFrame {
         styleComboBox(scaleBox);
         styleComboBox(themeBox);
 
+        JPanel bottomCard = new JPanel(new BorderLayout());
+        bottomCard.setOpaque(true);
+        bottomCard.setBorder(new EmptyBorder(6, 8, 6, 8));
+        bottomCard.add(rowBottom, BorderLayout.CENTER);
+
         controls.add(rowTop, BorderLayout.NORTH);
-        controls.add(rowBottom, BorderLayout.SOUTH);
+        controls.add(bottomCard, BorderLayout.SOUTH);
 
         add(topPanel, BorderLayout.NORTH);
     }
@@ -528,11 +623,11 @@ public class FileExplorerFrame extends JFrame {
         favoriteButtons.add(addFavoriteButton);
         favoriteButtons.add(removeFavoriteButton);
 
-        JPanel favoritesPanel = new JPanel(new BorderLayout(6, 6));
+        favoritesPanel = new JPanel(new BorderLayout(6, 6));
         favoritesPanel.setBorder(new EmptyBorder(6, 6, 6, 6));
-        JLabel title = new JLabel("Favorites");
-        title.setFont(title.getFont().deriveFont(Font.BOLD));
-        favoritesPanel.add(title, BorderLayout.NORTH);
+        favoritesTitleLabel = new JLabel("Favorites");
+        favoritesTitleLabel.setFont(favoritesTitleLabel.getFont().deriveFont(Font.BOLD, 13f));
+        favoritesPanel.add(favoritesTitleLabel, BorderLayout.NORTH);
         favoritesPanel.add(new JScrollPane(favoritesList), BorderLayout.CENTER);
         favoritesPanel.add(favoriteButtons, BorderLayout.SOUTH);
 
@@ -731,8 +826,8 @@ public class FileExplorerFrame extends JFrame {
         detailsPanel.setBackground(uiTheme.detailsBg);
         detailsPanel.setBorder(new EmptyBorder(8, 12, 8, 12));
 
-        JLabel title = new JLabel("Details");
-        title.setFont(title.getFont().deriveFont(Font.BOLD, 13f));
+        detailsTitleLabel = new JLabel("Details");
+        detailsTitleLabel.setFont(detailsTitleLabel.getFont().deriveFont(Font.BOLD, 13f));
 
         detailsArea.setEditable(false);
         detailsArea.setOpaque(false);
@@ -770,7 +865,7 @@ public class FileExplorerFrame extends JFrame {
         quickActions.add(deleteButton);
         quickActions.add(pathButton);
 
-        detailsPanel.add(title, BorderLayout.NORTH);
+        detailsPanel.add(detailsTitleLabel, BorderLayout.NORTH);
         detailsPanel.add(detailsArea, BorderLayout.CENTER);
         detailsPanel.add(quickActions, BorderLayout.SOUTH);
         return detailsPanel;
@@ -817,9 +912,10 @@ public class FileExplorerFrame extends JFrame {
 
     private void styleButton(AbstractButton button) {
         button.setFocusPainted(false);
+        button.setCursor(Cursor.getPredefinedCursor(Cursor.HAND_CURSOR));
         button.setBorder(BorderFactory.createCompoundBorder(
-                BorderFactory.createLineBorder(uiTheme.border),
-                new EmptyBorder(4, 9, 4, 9)
+                new RoundedLineBorder(uiTheme.border, 10),
+                new EmptyBorder(6, 12, 6, 12)
         ));
         button.setBackground(uiTheme.controlBg);
         button.setForeground(uiTheme.text);
@@ -827,8 +923,8 @@ public class FileExplorerFrame extends JFrame {
 
     private void styleTextField(JTextField field) {
         field.setBorder(BorderFactory.createCompoundBorder(
-                BorderFactory.createLineBorder(uiTheme.border),
-                new EmptyBorder(5, 8, 5, 8)
+                new RoundedLineBorder(uiTheme.border, 10),
+                new EmptyBorder(6, 10, 6, 10)
         ));
         field.setBackground(uiTheme.controlBg);
         field.setForeground(uiTheme.text);
@@ -836,9 +932,26 @@ public class FileExplorerFrame extends JFrame {
     }
 
     private void styleComboBox(JComboBox<?> comboBox) {
-        comboBox.setBorder(BorderFactory.createLineBorder(uiTheme.border));
+        comboBox.setBorder(new RoundedLineBorder(uiTheme.border, 10));
         comboBox.setBackground(uiTheme.controlBg);
         comboBox.setForeground(uiTheme.text);
+        comboBox.setCursor(Cursor.getPredefinedCursor(Cursor.HAND_CURSOR));
+    }
+
+    private void applyLookAndFeel(String className) {
+        if (className == null || className.isBlank() || className.equals(lookAndFeelClassName)) {
+            return;
+        }
+        try {
+            UIManager.setLookAndFeel(className);
+            lookAndFeelClassName = className;
+            SwingUtilities.updateComponentTreeUI(this);
+            applyTheme(uiTheme);
+            updateScaling();
+            persistSettings();
+        } catch (Exception ex) {
+            showError("Unable to apply Look & Feel: " + ex.getMessage());
+        }
     }
 
     private void applyTheme(UiTheme theme) {
@@ -849,19 +962,43 @@ public class FileExplorerFrame extends JFrame {
             topPanel.setBackground(theme.panel);
             topPanel.setBorder(BorderFactory.createCompoundBorder(
                     BorderFactory.createMatteBorder(0, 0, 1, 0, theme.border),
-                    new EmptyBorder(8, 10, 8, 10)
+                    new EmptyBorder(10, 12, 10, 12)
             ));
             applyForegroundRecursively(topPanel, theme.text);
             applyControlStylesRecursively(topPanel);
+            if (topPanel.getComponentCount() > 1 && topPanel.getComponent(1) instanceof JPanel card) {
+                card.setBackground(theme.rowPrimary);
+                card.setBorder(BorderFactory.createCompoundBorder(
+                        new RoundedLineBorder(theme.border, 12),
+                        new EmptyBorder(7, 9, 7, 9)
+                ));
+            }
+        }
+        if (brandLabel != null) {
+            brandLabel.setForeground(theme.headerText);
+        }
+        if (brandSubtitleLabel != null) {
+            brandSubtitleLabel.setForeground(new Color(
+                    Math.min(255, theme.text.getRed() + 25),
+                    Math.min(255, theme.text.getGreen() + 25),
+                    Math.min(255, theme.text.getBlue() + 25)
+            ));
         }
         if (detailsPanel != null) {
             detailsPanel.setBackground(theme.detailsBg);
             detailsPanel.setBorder(BorderFactory.createCompoundBorder(
-                    BorderFactory.createMatteBorder(1, 0, 0, 0, theme.border),
-                    new EmptyBorder(8, 12, 8, 12)
+                    new RoundedLineBorder(theme.border, 12),
+                    new EmptyBorder(10, 12, 10, 12)
             ));
             applyForegroundRecursively(detailsPanel, theme.text);
             applyControlStylesRecursively(detailsPanel);
+        }
+        if (favoritesPanel != null) {
+            favoritesPanel.setBackground(theme.detailsBg);
+            favoritesPanel.setBorder(BorderFactory.createCompoundBorder(
+                    new RoundedLineBorder(theme.border, 12),
+                    new EmptyBorder(10, 10, 10, 10)
+            ));
         }
         if (statusPanel != null) {
             statusPanel.setBackground(theme.panel);
@@ -882,6 +1019,12 @@ public class FileExplorerFrame extends JFrame {
         styleComboBox(themeBox);
         styleButton(addFavoriteButton);
         styleButton(removeFavoriteButton);
+        if (favoritesTitleLabel != null) {
+            favoritesTitleLabel.setForeground(theme.headerText);
+        }
+        if (detailsTitleLabel != null) {
+            detailsTitleLabel.setForeground(theme.headerText);
+        }
 
         tree.setBackground(theme.surface);
         tree.setForeground(theme.text);
@@ -942,6 +1085,26 @@ public class FileExplorerFrame extends JFrame {
         updateScaling();
     }
 
+    private void toggleDetailsPanel(boolean show) {
+        detailsVisible = show;
+        if (verticalSplit == null || detailsPanel == null) {
+            return;
+        }
+        if (show) {
+            detailsPanel.setVisible(true);
+            verticalSplit.setDividerSize(Math.max(6, verticalSplit.getDividerSize()));
+            verticalSplit.setDividerLocation(clampRatio(settings.verticalSplitRatio));
+        } else {
+            detailsPanel.setVisible(false);
+            verticalSplit.setDividerLocation(1.0);
+            verticalSplit.setDividerSize(0);
+        }
+        if (detailsToggleMenuItem != null && detailsToggleMenuItem.isSelected() != show) {
+            detailsToggleMenuItem.setSelected(show);
+        }
+        revalidate();
+    }
+
     private Path resolveInitialDirectory(Path fallback) {
         if (settings.lastDirectory != null && !settings.lastDirectory.isBlank()) {
             try {
@@ -989,6 +1152,7 @@ public class FileExplorerFrame extends JFrame {
         settings.density = uiDensity.name();
         settings.scale = uiScale.name();
         settings.theme = uiTheme.name();
+        settings.lookAndFeelClassName = lookAndFeelClassName;
         settings.showHiddenFiles = showHiddenFiles;
         settings.lastDirectory = currentDirectory != null ? currentDirectory.toString() : "";
 
@@ -1038,16 +1202,35 @@ public class FileExplorerFrame extends JFrame {
         detailsArea.setFont(detailsArea.getFont().deriveFont(Math.max(10f, baseFont - 0.5f)));
         addFavoriteButton.setFont(addFavoriteButton.getFont().deriveFont(baseFont));
         removeFavoriteButton.setFont(removeFavoriteButton.getFont().deriveFont(baseFont));
+        if (brandLabel != null) {
+            brandLabel.setFont(brandLabel.getFont().deriveFont(Font.BOLD, Math.max(13f, baseFont + 2f)));
+        }
+        if (brandSubtitleLabel != null) {
+            brandSubtitleLabel.setFont(brandSubtitleLabel.getFont().deriveFont(Font.PLAIN, Math.max(10f, baseFont - 1.5f)));
+        }
+        if (favoritesTitleLabel != null) {
+            favoritesTitleLabel.setFont(favoritesTitleLabel.getFont().deriveFont(Font.BOLD, Math.max(12f, baseFont)));
+        }
+        if (detailsTitleLabel != null) {
+            detailsTitleLabel.setFont(detailsTitleLabel.getFont().deriveFont(Font.BOLD, Math.max(12f, baseFont)));
+        }
 
         if (topPanel != null) {
             topPanel.setBorder(BorderFactory.createCompoundBorder(
                     BorderFactory.createMatteBorder(0, 0, 1, 0, uiTheme.border),
                     new EmptyBorder(verticalPad, horizontalPad, verticalPad, horizontalPad)
             ));
+            if (topPanel.getComponentCount() > 1 && topPanel.getComponent(1) instanceof JPanel card) {
+                int cardPad = Math.max(5, Math.round(6 * Math.min(scaleFactor, 1.7f)));
+                card.setBorder(BorderFactory.createCompoundBorder(
+                        new RoundedLineBorder(uiTheme.border, 12),
+                        new EmptyBorder(cardPad, cardPad + 1, cardPad, cardPad + 1)
+                ));
+            }
         }
         if (detailsPanel != null) {
             detailsPanel.setBorder(BorderFactory.createCompoundBorder(
-                    BorderFactory.createMatteBorder(1, 0, 0, 0, uiTheme.border),
+                    new RoundedLineBorder(uiTheme.border, 12),
                     new EmptyBorder(verticalPad, horizontalPad + 2, verticalPad, horizontalPad + 2)
             ));
         }
@@ -1104,6 +1287,9 @@ public class FileExplorerFrame extends JFrame {
         menu.add(createContextItem("Cut", () -> copySelection(true)));
         menu.add(createContextItem("Paste", this::pasteClipboard));
         menu.add(createContextItem("Copy Path", this::copyPathOfSelection));
+        menu.add(createContextItem("Copy File Name", this::copyNameOfSelection));
+        menu.addSeparator();
+        menu.add(createContextItem("Open In Terminal", this::openInTerminal));
         menu.addSeparator();
         menu.add(createContextItem("Rename", this::renameSelection));
         menu.add(createContextItem("Delete", this::deleteSelection));
@@ -1164,6 +1350,7 @@ public class FileExplorerFrame extends JFrame {
             }
 
             currentDirectory = normalized;
+            addRecentDirectory(normalized);
             pathField.setText(normalized.toString());
             tableModel.setDirectory(normalized, showHiddenFiles);
             favoritesList.setSelectedValue(normalized, true);
@@ -1230,11 +1417,11 @@ public class FileExplorerFrame extends JFrame {
                 navigateTo(path, true);
                 return;
             }
-            if (Desktop.isDesktopSupported()) {
+            if (Desktop.isDesktopSupported() && Desktop.getDesktop().isSupported(Desktop.Action.OPEN)) {
                 Desktop.getDesktop().open(path.toFile());
-            } else {
-                showError("Desktop operations are not supported on this platform.");
+                return;
             }
+            openPathWithSystemFallback(path);
         } catch (Exception ex) {
             showError("Unable to open: " + ex.getMessage());
         }
@@ -1295,39 +1482,66 @@ public class FileExplorerFrame extends JFrame {
         LinkedHashMap<String, String> options = new LinkedHashMap<>();
         options.put("System Default", "");
 
-        String os = System.getProperty("os.name", "").toLowerCase(Locale.ROOT);
-        if (os.contains("win")) {
-            options.put("Notepad", "notepad");
-            options.put("VS Code", "code");
-        } else if (os.contains("mac")) {
+        OperatingSystem os = detectOs();
+        if (os == OperatingSystem.WINDOWS) {
+            options.put("Notepad", "notepad.exe");
+            if (commandExists("code")) {
+                options.put("VS Code", "code");
+            }
+        } else if (os == OperatingSystem.MAC) {
             options.put("TextEdit", "open -a TextEdit");
             options.put("Preview", "open -a Preview");
-            options.put("VS Code", "code");
+            if (commandExists("code")) {
+                options.put("VS Code", "code");
+            }
         } else {
-            options.put("xdg-open", "xdg-open");
-            options.put("VS Code", "code");
-            options.put("gedit", "gedit");
-            options.put("LibreOffice", "libreoffice");
-            options.put("Firefox", "firefox");
+            if (commandExists("xdg-open")) {
+                options.put("xdg-open", "xdg-open");
+            }
+            if (commandExists("code")) {
+                options.put("VS Code", "code");
+            }
+            if (commandExists("gedit")) {
+                options.put("Gedit", "gedit");
+            }
+            if (commandExists("kate")) {
+                options.put("Kate", "kate");
+            }
+            if (commandExists("libreoffice")) {
+                options.put("LibreOffice", "libreoffice");
+            }
+            if (commandExists("firefox")) {
+                options.put("Firefox", "firefox");
+            }
         }
         return options;
     }
 
     private void runCommandForPath(String command, Path target) throws IOException {
-        String quotedPath = "'" + target.toAbsolutePath().toString().replace("'", "'\"'\"'") + "'";
-        String os = System.getProperty("os.name", "").toLowerCase(Locale.ROOT);
-        Process process;
-        if (os.contains("win")) {
-            process = new ProcessBuilder("cmd", "/c", command + " \"" + target.toAbsolutePath() + "\"").start();
-        } else {
-            process = new ProcessBuilder("sh", "-lc", command + " " + quotedPath).start();
+        String trimmed = command == null ? "" : command.trim();
+        if (trimmed.isBlank()) {
+            openPath(target);
+            return;
         }
-        if (!process.isAlive()) {
-            int exitCode = process.exitValue();
-            if (exitCode != 0) {
-                throw new IOException("Process exited with code " + exitCode);
+
+        if ("xdg-open".equals(trimmed) && commandExists("xdg-open")) {
+            new ProcessBuilder("xdg-open", target.toAbsolutePath().toString()).start();
+            return;
+        }
+        if (trimmed.startsWith("open -a ")) {
+            String appName = trimmed.substring("open -a ".length()).trim();
+            if (!appName.isBlank()) {
+                new ProcessBuilder("open", "-a", appName, target.toAbsolutePath().toString()).start();
+                return;
             }
         }
+
+        if (!trimmed.contains(" ") && !trimmed.contains("\"") && !trimmed.contains("'")) {
+            new ProcessBuilder(trimmed, target.toAbsolutePath().toString()).start();
+            return;
+        }
+
+        runShellCommandWithPath(trimmed, target);
     }
 
     private void copySelection(boolean cut) {
@@ -1349,6 +1563,139 @@ public class FileExplorerFrame extends JFrame {
         }
         Toolkit.getDefaultToolkit().getSystemClipboard().setContents(new StringSelection(selected.toString()), null);
         statusLabel.setText("Path copied: " + selected);
+    }
+
+    private void copyNameOfSelection() {
+        Path selected = getSingleSelectedPath();
+        if (selected == null || selected.getFileName() == null) {
+            return;
+        }
+        String name = selected.getFileName().toString();
+        Toolkit.getDefaultToolkit().getSystemClipboard().setContents(new StringSelection(name), null);
+        statusLabel.setText("File name copied: " + name);
+    }
+
+    private void openInTerminal() {
+        Path directory = currentDirectory;
+        if (directory == null) {
+            return;
+        }
+        try {
+            openDirectoryInTerminal(directory);
+            statusLabel.setText("Opened terminal at: " + directory);
+        } catch (Exception ex) {
+            showError("Open terminal failed: " + ex.getMessage());
+        }
+    }
+
+    private OperatingSystem detectOs() {
+        String osName = System.getProperty("os.name", "").toLowerCase(Locale.ROOT);
+        if (osName.contains("win")) {
+            return OperatingSystem.WINDOWS;
+        }
+        if (osName.contains("mac")) {
+            return OperatingSystem.MAC;
+        }
+        if (osName.contains("nix") || osName.contains("nux") || osName.contains("aix")) {
+            return OperatingSystem.LINUX;
+        }
+        return OperatingSystem.OTHER;
+    }
+
+    private boolean commandExists(String command) {
+        if (command == null || command.isBlank()) {
+            return false;
+        }
+        try {
+            OperatingSystem os = detectOs();
+            Process process;
+            if (os == OperatingSystem.WINDOWS) {
+                process = new ProcessBuilder("cmd", "/c", "where", command).start();
+            } else {
+                process = new ProcessBuilder("sh", "-lc", "command -v " + quoteForPosix(command)).start();
+            }
+            int exit = process.waitFor();
+            return exit == 0;
+        } catch (Exception ignored) {
+            return false;
+        }
+    }
+
+    private void openPathWithSystemFallback(Path path) throws IOException {
+        OperatingSystem os = detectOs();
+        if (os == OperatingSystem.WINDOWS) {
+            new ProcessBuilder("cmd", "/c", "start", "\"\"", "\"" + path.toAbsolutePath() + "\"").start();
+            return;
+        }
+        if (os == OperatingSystem.MAC) {
+            new ProcessBuilder("open", path.toAbsolutePath().toString()).start();
+            return;
+        }
+        if (os == OperatingSystem.LINUX && commandExists("xdg-open")) {
+            new ProcessBuilder("xdg-open", path.toAbsolutePath().toString()).start();
+            return;
+        }
+        throw new IOException("No supported open handler for this platform.");
+    }
+
+    private void runShellCommandWithPath(String command, Path target) throws IOException {
+        String absolutePath = target.toAbsolutePath().toString();
+        if (detectOs() == OperatingSystem.WINDOWS) {
+            String shellCommand = command + " " + quoteForWindowsCmd(absolutePath);
+            new ProcessBuilder("cmd", "/c", shellCommand).start();
+            return;
+        }
+        String shellCommand = command + " " + quoteForPosix(absolutePath);
+        new ProcessBuilder("sh", "-lc", shellCommand).start();
+    }
+
+    private void openDirectoryInTerminal(Path directory) throws IOException {
+        String dir = directory.toAbsolutePath().toString();
+        OperatingSystem os = detectOs();
+        if (os == OperatingSystem.WINDOWS) {
+            new ProcessBuilder("cmd", "/c", "start", "\"\"", "cmd", "/k", "cd /d \"" + dir + "\"").start();
+            return;
+        }
+        if (os == OperatingSystem.MAC) {
+            new ProcessBuilder("open", "-a", "Terminal", dir).start();
+            return;
+        }
+        if (os == OperatingSystem.LINUX) {
+            if (commandExists("x-terminal-emulator")) {
+                new ProcessBuilder("x-terminal-emulator", "--working-directory", dir).start();
+                return;
+            }
+            if (commandExists("gnome-terminal")) {
+                new ProcessBuilder("gnome-terminal", "--working-directory=" + dir).start();
+                return;
+            }
+            if (commandExists("konsole")) {
+                new ProcessBuilder("konsole", "--workdir", dir).start();
+                return;
+            }
+            if (commandExists("xfce4-terminal")) {
+                new ProcessBuilder("xfce4-terminal", "--working-directory", dir).start();
+                return;
+            }
+            if (commandExists("alacritty")) {
+                new ProcessBuilder("alacritty", "--working-directory", dir).start();
+                return;
+            }
+            if (commandExists("xterm")) {
+                String shellCommand = "cd " + quoteForPosix(dir) + " && exec \"$SHELL\"";
+                new ProcessBuilder("xterm", "-e", "sh", "-lc", shellCommand).start();
+                return;
+            }
+        }
+        throw new IOException("No terminal application found.");
+    }
+
+    private String quoteForPosix(String value) {
+        return "'" + value.replace("'", "'\"'\"'") + "'";
+    }
+
+    private String quoteForWindowsCmd(String value) {
+        return "\"" + value.replace("\"", "\\\"") + "\"";
     }
 
     private void pasteClipboard() {
@@ -1551,186 +1898,5 @@ public class FileExplorerFrame extends JFrame {
     private void showError(String message) {
         JOptionPane.showMessageDialog(this, message, "Error", JOptionPane.ERROR_MESSAGE);
         statusLabel.setText("Error: " + message);
-    }
-
-    private enum UiDensity {
-        COMPACT("Compact", 22, 22, 11),
-        COMFORTABLE("Comfortable", 27, 24, 12),
-        SPACIOUS("Spacious", 32, 28, 13);
-
-        private final String label;
-        private final int tableRowHeight;
-        private final int treeRowHeight;
-        private final int fontSize;
-
-        UiDensity(String label, int tableRowHeight, int treeRowHeight, int fontSize) {
-            this.label = label;
-            this.tableRowHeight = tableRowHeight;
-            this.treeRowHeight = treeRowHeight;
-            this.fontSize = fontSize;
-        }
-
-        @Override
-        public String toString() {
-            return label;
-        }
-    }
-
-    private enum UiScale {
-        S75("75%", 0.75f),
-        S100("100%", 1.00f),
-        S125("125%", 1.25f),
-        S150("150%", 1.50f),
-        S200("200%", 2.00f),
-        S300("300%", 3.00f),
-        S400("400%", 4.00f);
-
-        private final String label;
-        private final float factor;
-
-        UiScale(String label, float factor) {
-            this.label = label;
-            this.factor = factor;
-        }
-
-        @Override
-        public String toString() {
-            return label;
-        }
-    }
-
-    private enum UiTheme {
-        OCEAN(
-                "Ocean",
-                new Color(244, 248, 252),
-                new Color(230, 238, 248),
-                new Color(255, 255, 255),
-                new Color(247, 250, 253),
-                new Color(34, 96, 174),
-                Color.WHITE,
-                new Color(32, 38, 48),
-                new Color(223, 232, 244),
-                new Color(45, 56, 70),
-                new Color(235, 243, 251),
-                Color.WHITE,
-                new Color(188, 201, 220),
-                new Color(221, 228, 238)
-        ),
-        FOREST(
-                "Forest",
-                new Color(242, 248, 243),
-                new Color(224, 236, 226),
-                Color.WHITE,
-                new Color(246, 250, 246),
-                new Color(40, 120, 72),
-                Color.WHITE,
-                new Color(29, 44, 33),
-                new Color(213, 228, 214),
-                new Color(29, 44, 33),
-                new Color(232, 242, 234),
-                Color.WHITE,
-                new Color(175, 196, 176),
-                new Color(216, 226, 217)
-        ),
-        SUNSET(
-                "Sunset",
-                new Color(252, 246, 240),
-                new Color(246, 232, 220),
-                Color.WHITE,
-                new Color(252, 249, 246),
-                new Color(181, 92, 34),
-                Color.WHITE,
-                new Color(58, 44, 35),
-                new Color(241, 223, 208),
-                new Color(65, 50, 40),
-                new Color(247, 236, 226),
-                Color.WHITE,
-                new Color(208, 177, 151),
-                new Color(233, 217, 204)
-        ),
-        MONO(
-                "Mono",
-                new Color(245, 245, 246),
-                new Color(232, 233, 235),
-                Color.WHITE,
-                new Color(250, 250, 251),
-                new Color(78, 88, 100),
-                Color.WHITE,
-                new Color(39, 42, 47),
-                new Color(223, 226, 230),
-                new Color(45, 48, 53),
-                new Color(237, 239, 241),
-                Color.WHITE,
-                new Color(186, 192, 199),
-                new Color(220, 223, 227)
-        ),
-        MIDNIGHT(
-                "Midnight",
-                new Color(25, 30, 37),
-                new Color(33, 39, 49),
-                new Color(42, 49, 60),
-                new Color(47, 55, 67),
-                new Color(76, 137, 219),
-                Color.WHITE,
-                new Color(230, 235, 242),
-                new Color(41, 49, 60),
-                new Color(218, 224, 235),
-                new Color(36, 44, 55),
-                new Color(55, 63, 76),
-                new Color(84, 99, 117),
-                new Color(56, 65, 78)
-        );
-
-        private final String label;
-        private final Color surface;
-        private final Color panel;
-        private final Color rowPrimary;
-        private final Color rowAlt;
-        private final Color selection;
-        private final Color selectionText;
-        private final Color text;
-        private final Color headerBg;
-        private final Color headerText;
-        private final Color detailsBg;
-        private final Color controlBg;
-        private final Color border;
-        private final Color grid;
-
-        UiTheme(
-                String label,
-                Color surface,
-                Color panel,
-                Color rowPrimary,
-                Color rowAlt,
-                Color selection,
-                Color selectionText,
-                Color text,
-                Color headerBg,
-                Color headerText,
-                Color detailsBg,
-                Color controlBg,
-                Color border,
-                Color grid
-        ) {
-            this.label = label;
-            this.surface = surface;
-            this.panel = panel;
-            this.rowPrimary = rowPrimary;
-            this.rowAlt = rowAlt;
-            this.selection = selection;
-            this.selectionText = selectionText;
-            this.text = text;
-            this.headerBg = headerBg;
-            this.headerText = headerText;
-            this.detailsBg = detailsBg;
-            this.controlBg = controlBg;
-            this.border = border;
-            this.grid = grid;
-        }
-
-        @Override
-        public String toString() {
-            return label;
-        }
     }
 }

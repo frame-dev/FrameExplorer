@@ -16,6 +16,7 @@ public final class ExplorerSettings {
     public String density = "COMFORTABLE";
     public String scale = "S100";
     public String theme = "OCEAN";
+    public String lookAndFeelClassName = "";
     public boolean showHiddenFiles;
     public String lastDirectory = "";
 
@@ -47,6 +48,7 @@ public final class ExplorerSettings {
         settings.density = props.getProperty("ui.density", settings.density);
         settings.scale = props.getProperty("ui.scale", settings.scale);
         settings.theme = props.getProperty("ui.theme", settings.theme);
+        settings.lookAndFeelClassName = props.getProperty("ui.lookAndFeel", settings.lookAndFeelClassName);
         settings.showHiddenFiles = parseBoolean(props.getProperty("showHiddenFiles"), false);
         settings.lastDirectory = props.getProperty("lastDirectory", "");
 
@@ -75,6 +77,7 @@ public final class ExplorerSettings {
         props.setProperty("ui.density", density);
         props.setProperty("ui.scale", scale);
         props.setProperty("ui.theme", theme);
+        props.setProperty("ui.lookAndFeel", lookAndFeelClassName == null ? "" : lookAndFeelClassName);
         props.setProperty("showHiddenFiles", Boolean.toString(showHiddenFiles));
         props.setProperty("lastDirectory", lastDirectory == null ? "" : lastDirectory);
 

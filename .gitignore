@@ -1,0 +1,22 @@
+# Maven / Java build output
+/target/
+/bin/
+*.class
+
+# Logs
+*.log
+
+# IDE
+.vscode/
+.idea/
+*.iml
+
+# OS files
+.DS_Store
+Thumbs.db
+
+# Local app settings
+*.local
+
+# Explorer runtime settings (per-user)
+.frame-explorer/
